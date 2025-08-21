@@ -1,3 +1,17 @@
+"""
+ICVAE - Interpretable Causal Variational Autoencoder
+===================================================
+
+Main Modules:
+- Data Loading: CSV preprocessing, normalization, outlier handling
+- Model Training: Dynamic weight scheduling, early stopping, checkpointing  
+- Visualization: Causal graphs, training curves, analysis reports
+- Utilities: DataLoader setup, EMA, argument parsing
+
+Usage:
+    python ICVAE.py --data_path your_data.csv --epoch_max 200
+"""
+
 import argparse
 import os
 import torch
@@ -28,7 +42,6 @@ try:
     if project_root not in sys.path:
         sys.path.append(project_root)
     from codebase.models.mask_vae import CausalVAE
-    from utils import get_batch_unin_dataset_withlabel,_h_A
     from codebase.models import nns
 except ImportError as e:
     logging.error(f"Failed to import modules: {e}. Please ensure the project structure is correct and all dependencies are installed.")
@@ -38,246 +51,264 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 logging.info(f"Using device: {device}")
 
 
+# =============================================================================
+# COMMAND LINE ARGUMENTS
+# =============================================================================
+
 def get_args():
-    """Defines and parses command-line arguments."""
+    """Parse command line arguments for training configuration."""
     parser = argparse.ArgumentParser(
-        description="Train CausalVAE model",
+        description="Train ICVAE (Interpretable Causal VAE) model for geochemical data",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    # Training parameters
-    parser.add_argument('--data_path', type=str, default=r'D:\trustworthyAI-master\research\CausalVAE\data\南岭\南岭化探(花岗岩+控矿地层).csv', help="Path to the training data CSV file.")
-    parser.add_argument('--epoch_max', type=int, default=250, help="Maximum number of training epochs.")
-    parser.add_argument('--batch_size', type=int, default=64, help="Training batch size.")
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help="Optimizer learning rate.")
-    parser.add_argument('--weight_decay', type=float, default=1e-5, help="Weight decay for AdamW optimizer.")
-    parser.add_argument('--iter_save', type=int, default=10, help="Save a checkpoint every n epochs.")
-    parser.add_argument('--num_workers', type=int, default=4, help="Number of worker processes for data loading.")
+    
+    # DATA PARAMETERS
+    parser.add_argument('--data_path', type=str, 
+                        default="data",
+                        help="Path to the training data CSV file (39 elements + 3 labels)")
+    
+    # TRAINING PARAMETERS  
+    parser.add_argument('--epoch_max', type=int, default=250, 
+                        help="Maximum number of training epochs")
+    parser.add_argument('--batch_size', type=int, default=64, 
+                        help="Training batch size for mini-batch gradient descent")
+    parser.add_argument('--learning_rate', type=float, default=1e-4, 
+                        help="Initial learning rate for AdamW optimizer")
+    parser.add_argument('--weight_decay', type=float, default=1e-5, 
+                        help="L2 weight decay regularization for AdamW optimizer")
+    parser.add_argument('--iter_save', type=int, default=10, 
+                        help="Save model checkpoint every n epochs")
+    parser.add_argument('--num_workers', type=int, default=4, 
+                        help="Number of worker processes for parallel data loading")
 
-    # Model parameters
-    parser.add_argument('--z_dim', type=int, default=39, help="Dimension of the latent variable from VAE encoder, recommended to be consistent with the number of elements.")
-    parser.add_argument('--initial', action='store_true', help="If set, initialize the DAG matrix randomly.")
+    # MODEL ARCHITECTURE PARAMETERS
+    parser.add_argument('--z_dim', type=int, default=39, 
+                        help="VAE latent space dimension (recommended: same as element count)")
+    parser.add_argument('--initial', action='store_true', 
+                        help="Whether to randomly initialize DAG adjacency matrix")
 
-    # Directory parameters
-    parser.add_argument('--results_dir', type=str, default='results', help="Directory to save visualization results and reports.")
-    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints/causalvae_run', help="Directory to save model checkpoints.")
+    # OUTPUT DIRECTORY PARAMETERS
+    parser.add_argument('--results_dir', type=str, default='results', 
+                        help="Directory to save training curves and analysis plots")
+    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints/causalvae_run', 
+                        help="Directory to save model checkpoints and best model")
     
     return parser.parse_args()
 
 
+# =============================================================================
+# DATA LOADING & PREPROCESSING
+# =============================================================================
+
 def load_data(data_path: str, verbose: bool = False) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
+    """
+    Load CSV data (39 elements + 3 labels), handle NaN/outliers, normalize with RobustScaler.
+    Returns: X_normalized, y_labels, element_names, label_names
+    """
     try:
+        # Load CSV data with GBK encoding
         data_set = pd.read_csv(data_path, encoding='GBK')
         
         if verbose:
-            logging.info("\n--- Data Loading Details ---")
-            logging.info(f"All column names: {data_set.columns.tolist()}")
+            logging.info(f"Data loaded: {data_set.shape}")
+            logging.info(f"Columns: {data_set.columns.tolist()}")
         
-        # Assuming the first 39 columns are elements and the last 3 are labels
+        # Extract column names and data arrays
         element_names = data_set.columns[:39].tolist()
         label_names = data_set.columns[-3:].tolist()
-        
-        if verbose:
-            logging.info(f"Element names ({len(element_names)}): {element_names[:5]}...")
-            logging.info(f"Label names ({len(label_names)}): {label_names}")
-        
         X = data_set.iloc[:, :39].values.astype('float32')
         y = data_set.iloc[:, -3:].values.astype('float32')
         
         if verbose:
-            logging.info(f"\n--- Raw Data Statistics ---")
-            logging.info(f"X shape: {X.shape}, y shape: {y.shape}")
-            logging.info(f"Number of 0s: {(X == 0).sum()}, Number of NaNs: {np.isnan(X).sum()}")
-            logging.info(f"Value range: [{X.min()}, {X.max()}]")
+            logging.info(f"Elements: {len(element_names)}, Labels: {len(label_names)}")
+            logging.info(f"NaN count: {np.isnan(X).sum()}, Zero count: {(X == 0).sum()}")
 
+        # Handle NaN and infinite values
         if np.isnan(X).any() or np.isinf(X).any():
-            logging.warning(f"Detected abnormal values: NaN({np.isnan(X).sum()}), Inf({np.isinf(X).sum()}). Will be replaced.")
-            X = np.nan_to_num(X, nan=0.0, posinf=np.nanmax(X[np.isfinite(X)]), neginf=np.nanmin(X[np.isfinite(X)]))
+            logging.warning(f"Replacing NaN/Inf values...")
+            X = np.nan_to_num(X, nan=0.0, 
+                             posinf=np.nanmax(X[np.isfinite(X)]), 
+                             neginf=np.nanmin(X[np.isfinite(X)]))
         
+        # RobustScaler normalization and zero preservation
         scaler = RobustScaler(quantile_range=(1, 99))
         X_norm = scaler.fit_transform(X)
-        
         mask_zero = (X == 0)
         X_norm_clean = np.clip(X_norm, -5.0, 5.0)
         X_norm_clean[mask_zero] = 0
         
         if verbose:
-            logging.info("\n--- Processed Data Statistics ---")
-            logging.info(f"Number of 0s: {(X_norm_clean == 0).sum()}")
-            logging.info(f"Value range: [{X_norm_clean.min():.4f}, {X_norm_clean.max():.4f}]")
+            logging.info(f"Normalized range: [{X_norm_clean.min():.3f}, {X_norm_clean.max():.3f}]")
         
+        # Normalize labels to [0, 1]
         y = np.clip(y, 0, 1)
         
         return X_norm_clean, y, element_names, label_names
         
     except FileNotFoundError:
         logging.error(f"Data file not found: {data_path}")
+        logging.error("Please check the file path and ensure the CSV file exists.")
         sys.exit(1)
     except Exception as e:
-        logging.error(f"An error occurred during data loading or preprocessing: {e}")
+        logging.error(f"Error during data loading or preprocessing: {e}")
+        logging.error("Please check the CSV format: 39 element columns + 3 label columns")
         raise
 
 
+# =============================================================================
+# VISUALIZATION & ANALYSIS
+# =============================================================================
+
 def visualize_causal_graph(model: CausalVAE, save_dir: str, label_names: List[str]):
-    """Simplified causal graph visualization function, handling only labels."""
+    """Generate heatmap of causal relationships between geological labels."""
     try:
+        # Extract DAG matrix and create heatmap
         A = model.dag.A.cpu().detach().numpy()
-        
         logging.info(f"DAG matrix shape: {A.shape}")
-        logging.info(f"Number of non-zero elements: {np.count_nonzero(A)}")
         
         plt.figure(figsize=(10, 8))
+        sns.heatmap(A, cmap='RdBu_r', center=0, annot=True, fmt='.2f',
+                    xticklabels=label_names, yticklabels=label_names,
+                    cbar_kws={'label': 'Causal Strength'})
         
-        sns.heatmap(A, 
-                    cmap='RdBu_r',  
-                    center=0,
-                    annot=True,     
-                    fmt='.2f',      
-                    xticklabels=label_names,
-                    yticklabels=label_names)
-        
-        plt.title('Causal Relationship Matrix Between Labels', fontsize=16)
+        plt.title('Causal Relationships Between Geological Labels', fontsize=16)
         plt.xlabel('Effect Variable', fontsize=12)
         plt.ylabel('Cause Variable', fontsize=12)
-        
         plt.xticks(rotation=45, ha='right')
-        
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, 'label_causal_matrix.png'), dpi=300, bbox_inches='tight')
         plt.close()
         
-        # Extract important relationships between labels
+        # Extract significant relationships
         important_relations = []
+        threshold = 0.1
         for i in range(A.shape[0]):
             for j in range(A.shape[1]):
-                if i != j and abs(A[i, j]) > 0.1:  # Filter weak relationships
-                    important_relations.append((
-                        label_names[i],
-                        label_names[j],
-                        A[i, j],
-                        "Positive correlation" if A[i, j] > 0 else "Negative correlation"
-                    ))
+                if i != j and abs(A[i, j]) > threshold:
+                    direction = "Positive" if A[i, j] > 0 else "Negative"
+                    important_relations.append((label_names[i], label_names[j], A[i, j], direction))
         
         important_relations.sort(key=lambda x: abs(x[2]), reverse=True)
         
-        logging.info("\n--- Important Causal Relationships Between Labels ---")
-        for i, (source, target, strength, relation) in enumerate(important_relations):
-            logging.info(f"{i+1}. {source} → {target}: Strength {abs(strength):.4f} ({relation})")
+        # Log significant relationships
+        logging.info("\n--- Significant Causal Relationships ---")
+        for i, (cause, effect, strength, direction) in enumerate(important_relations):
+            logging.info(f"{i+1}. {cause} → {effect}: {abs(strength):.4f} ({direction})")
         
     except Exception as e:
-        logging.error(f"Error generating causal graph: {str(e)}")
+        logging.error(f"Error generating causal heatmap: {str(e)}")
         plt.close()
 
 def plot_training_curves(loss_history, kl_history, rec_history, save_dir):
-    """Simplified training curve visualization function."""
+    """Generate three-panel training curves: total loss, KL divergence, reconstruction error."""
     try:
         plt.figure(figsize=(15, 5))
         
+        # Total Loss
         plt.subplot(1, 3, 1)
-        plt.plot(loss_history, 'b-', label='Training Loss')
-        plt.title('Total Loss Curve')
+        plt.plot(loss_history, 'b-', linewidth=2)
+        plt.title('Total Loss', fontweight='bold')
         plt.xlabel('Epoch')
-        plt.ylabel('Loss Value')
-        plt.legend()
-        plt.grid(True)
+        plt.ylabel('Loss')
+        plt.grid(True, alpha=0.3)
         
+        # KL Divergence
         plt.subplot(1, 3, 2)
-        plt.plot(kl_history, 'r-', label='KL Divergence')
-        plt.title('KL Divergence Curve')
+        plt.plot(kl_history, 'r-', linewidth=2)
+        plt.title('KL Divergence', fontweight='bold')
         plt.xlabel('Epoch')
-        plt.ylabel('KL Divergence')
-        plt.legend()
-        plt.grid(True)
+        plt.ylabel('KL Loss')
+        plt.grid(True, alpha=0.3)
         
+        # Reconstruction Error
         plt.subplot(1, 3, 3)
-        plt.plot(rec_history, 'g-', label='Reconstruction Error')
-        plt.title('Reconstruction Error Curve')
+        plt.plot(rec_history, 'g-', linewidth=2)
+        plt.title('Reconstruction Error', fontweight='bold')
         plt.xlabel('Epoch')
-        plt.ylabel('Reconstruction Error')
-        plt.legend()
-        plt.grid(True)
+        plt.ylabel('Rec Loss')
+        plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, 'training_curves.png'), dpi=300, bbox_inches='tight')
         plt.close()
         
+        if loss_history:
+            logging.info(f"Final losses - Total:{loss_history[-1]:.4f}, KL:{kl_history[-1]:.4f}, Rec:{rec_history[-1]:.4f}")
+        
     except Exception as e:
         logging.error(f"Error plotting training curves: {str(e)}")
         plt.close()
 
+# =============================================================================
+# TRAINING UTILITIES
+# =============================================================================
+
 def create_data_loaders(X_norm: np.ndarray, y: np.ndarray, batch_size: int, num_workers: int) -> data.DataLoader:
-    """Creates optimized data loaders."""
+    """Create optimized PyTorch DataLoader with performance enhancements."""
     dataset = data.TensorDataset(
         torch.tensor(X_norm, dtype=torch.float32),
         torch.tensor(y, dtype=torch.float32)
     )
     
-    # Use a fixed random seed for reproducibility
     generator = torch.Generator().manual_seed(42)
-    
     train_loader = data.DataLoader(
-        dataset=dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-        generator=generator,
-        drop_last=True,
-        persistent_workers=(num_workers > 0)
+        dataset=dataset, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=True, generator=generator,
+        drop_last=True, persistent_workers=(num_workers > 0)
     )
     
+    logging.info(f"DataLoader: {len(dataset)} samples, {len(train_loader)} batches")
     return train_loader
 
 class ExponentialMovingAverage:
-    """Implements EMA."""
-    def __init__(self, parameters, decay):
-        self.parameters = parameters
+    """EMA for model parameters. Formula: shadow = decay * shadow + (1 - decay) * current"""
+    
+    def __init__(self, parameters, decay: float = 0.995):
+        """Initialize EMA with model parameters and decay rate."""
+        self.parameters = list(parameters)
         self.decay = decay
-        self.shadow_params = [p.clone().detach()
-                            for p in parameters]
+        self.shadow_params = [p.clone().detach() for p in self.parameters]
         self.collected_params = []
 
     def update(self):
-        """Updates EMA parameters."""
+        """Update EMA parameters after training step."""
         for s_param, param in zip(self.shadow_params, self.parameters):
             s_param.sub_((1 - self.decay) * (s_param - param))
 
-def train_model(model: CausalVAE, 
-                train_loader: data.DataLoader, 
-                optimizer: optim.Optimizer, 
-                args: argparse.Namespace,
-                element_names: List[str], 
-                label_names: List[str]):
+# =============================================================================
+# MAIN TRAINING FUNCTION
+# =============================================================================
+
+def train_model(model: CausalVAE, train_loader: data.DataLoader, optimizer: optim.Optimizer, 
+                args: argparse.Namespace, element_names: List[str], label_names: List[str]):
     """
-    Main function for model training.
+    Main training loop with dynamic weight scheduling, early stopping, and robustness features.
+    Features: KL/DAG weight annealing, EMA, gradient clipping, auto-recovery, adaptive adjustments.
     """
     
-    min_delta = 0.005
-    patience = 10
-    best_loss = float('inf')
-    patience_counter = 0
-    unstable_count = 0
+    # Initialize training parameters
+    min_delta, patience = 0.005, 10
+    best_loss, patience_counter, unstable_count = float('inf'), 0, 0
     last_losses = []
 
-    # Weight annealing parameters
-    KL_WEIGHT_MIN = 0.5
-    KL_WEIGHT_MAX = 1.0
-    KL_WARMUP_EPOCHS_START = 10
-    KL_WARMUP_EPOCHS_DURATION = 20
-
-    DAG_WEIGHT_START = 0.1
-    DAG_WEIGHT_MAX = 0.5
-    DAG_WARMUP_EPOCHS_START = 15
-    DAG_WARMUP_EPOCHS_DURATION = 15
+    # Dynamic weight annealing schedule
+    KL_WEIGHT_MIN, KL_WEIGHT_MAX = 0.5, 1.0
+    KL_WARMUP_EPOCHS_START, KL_WARMUP_EPOCHS_DURATION = 10, 20
+    DAG_WEIGHT_START, DAG_WEIGHT_MAX = 0.1, 0.5
+    DAG_WARMUP_EPOCHS_START, DAG_WARMUP_EPOCHS_DURATION = 15, 15
     
+    # Setup training utilities
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-6, verbose=True)
     ema = ExponentialMovingAverage(model.parameters(), decay=0.995)
-    
     loss_history, kl_history, rec_history = [], [], []
     
-    logging.info(f"Training started: KL weight range=[{KL_WEIGHT_MIN}, {KL_WEIGHT_MAX}], DAG weight=[{DAG_WEIGHT_START}, {DAG_WEIGHT_MAX}]")
+    logging.info(f"Training started - KL:[{KL_WEIGHT_MIN}→{KL_WEIGHT_MAX}], DAG:[{DAG_WEIGHT_START}→{DAG_WEIGHT_MAX}]")
+    
+    # Main training loop
     
     for epoch in range(args.epoch_max):
-        # --- Dynamic Weight Adjustment ---
+        
+        # Dynamic weight scheduling
         if epoch < KL_WARMUP_EPOCHS_START:
             kl_weight = KL_WEIGHT_MIN
         else:
@@ -290,34 +321,30 @@ def train_model(model: CausalVAE,
             progress = (epoch - DAG_WARMUP_EPOCHS_START) / DAG_WARMUP_EPOCHS_DURATION
             current_dag_weight = min(DAG_WEIGHT_MAX, DAG_WEIGHT_START + (DAG_WEIGHT_MAX - DAG_WEIGHT_START) * progress)
 
-        logging.info(f"Epoch {epoch}/{args.epoch_max-1}: KL weight={kl_weight:.4f}, DAG weight={current_dag_weight:.4f}")
+        logging.info(f"Epoch {epoch}: KL={kl_weight:.3f}, DAG={current_dag_weight:.3f}")
         
+        # Initialize epoch
         model.train()
-        epoch_loss = 0
-        epoch_kl = 0
-        epoch_rec = 0
-        epoch_dag = 0
-        
-        pbar = tqdm(train_loader, desc=f'Epoch {epoch}/{args.epoch_max-1}', leave=False)
+        epoch_loss = epoch_kl = epoch_rec = epoch_dag = 0
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)
         batch_count = 0
+        
+        # Batch training loop
         
         for X_train, y_train in pbar:
             optimizer.zero_grad()
-            
             X_train, y_train = X_train.to(device), y_train.to(device)
             
             try:
                 with torch.amp.autocast(device_type='cuda', enabled=False):
                     if torch.isnan(X_train).any() or torch.isnan(y_train).any():
-                        logging.warning("Input data contains NaN, skipping this batch.")
+                        logging.warning("NaN in input data, skipping batch")
                         continue
                     
+                    # Forward pass with dynamic weights
                     total_loss, summaries = model.loss(
-                        x=X_train,
-                        label=y_train,
-                        rec_weight=1.0, # Reconstruction weight fixed at 1
-                        kl_weight=kl_weight,
-                        dag_weight=current_dag_weight
+                        x=X_train, label=y_train,
+                        rec_weight=1.0, kl_weight=kl_weight, dag_weight=current_dag_weight
                     )
 
                     rec = summaries['train/rec_loss']
@@ -325,14 +352,16 @@ def train_model(model: CausalVAE,
                     dag_loss = summaries['train/dag_structural_loss']
                     
                     if torch.isnan(total_loss):
-                        logging.warning("Total loss is NaN, skipping this batch.")
+                        logging.warning("NaN in total loss, skipping batch")
                         continue
                         
+                    # Backward pass and optimization
                     total_loss.backward()
                     clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
                     ema.update()
                     
+                    # Accumulate statistics
                     epoch_loss += total_loss.item()
                     epoch_kl += kl
                     epoch_rec += rec
@@ -340,7 +369,7 @@ def train_model(model: CausalVAE,
                     batch_count += 1
                     
             except RuntimeError as e:
-                logging.warning(f"Runtime error during batch processing: {e}, skipping this batch.")
+                logging.warning(f"Runtime error: {e}, skipping batch")
                 continue
             
             if batch_count > 0 and batch_count % 10 == 0:
@@ -351,56 +380,81 @@ def train_model(model: CausalVAE,
                     'lr': f"{optimizer.param_groups[0]['lr']:.6f}"
                 })
         
+        # ---------------------------------------------------------------------
+        # STEP 4: EPOCH COMPLETION AND STATISTICS
+        # ---------------------------------------------------------------------
+        
+        # Validate that at least some batches were processed
         if batch_count == 0:
-            logging.error(f"Epoch {epoch} did not process any valid batches, there might be an issue with training.")
+            logging.error(f"Epoch {epoch}: No valid batches processed! Check data quality.")
             continue
 
+        # Calculate average losses for the epoch
         avg_loss = epoch_loss / batch_count
         avg_kl = epoch_kl / batch_count
         avg_rec = epoch_rec / batch_count
         avg_dag = epoch_dag / batch_count
         
+        # Store loss history for visualization
         loss_history.append(avg_loss)
         kl_history.append(avg_kl)
         rec_history.append(avg_rec)
         
-        logging.info(f"\nEpoch {epoch} Statistics: "
-                     f"Total Loss={avg_loss:.4f}, KL={avg_kl:.4f}, Reconstruction={avg_rec:.4f}, DAG={avg_dag:.4f}")
+        logging.info(f"\nEpoch {epoch} Results: "
+                     f"Total Loss={avg_loss:.4f}, KL={avg_kl:.4f}, "
+                     f"Reconstruction={avg_rec:.4f}, DAG={avg_dag:.4f}")
         
-        # --- Model Check and Save ---
+        # ---------------------------------------------------------------------
+        # STEP 5: MODEL VALIDATION AND RECOVERY
+        # ---------------------------------------------------------------------
+        
+        # Check for NaN in model parameters (indicates training instability)
         has_nan = any(torch.isnan(p).any() for p in model.parameters())
         if has_nan:
-            logging.error(f"Model parameters contain NaN after Epoch {epoch}! Attempting to restore from the best checkpoint.")
+            logging.error(f"Model parameters contain NaN after Epoch {epoch}! Attempting recovery...")
             try:
-                checkpoint = torch.load(os.path.join(args.checkpoint_dir, 'model-best.pt'))
+                # Restore from best checkpoint if available
+                checkpoint_path = os.path.join(args.checkpoint_dir, 'model-best.pt')
+                checkpoint = torch.load(checkpoint_path)
                 model.load_state_dict(checkpoint['model_state_dict'])
-                logging.info("Successfully restored model from checkpoint.")
+                logging.info("Successfully restored model from best checkpoint.")
             except Exception as e:
-                logging.critical(f"Could not restore model from checkpoint: {e}. Training terminated.")
+                logging.critical(f"Model recovery failed: {e}. Training terminated.")
                 break
             continue
         
+        # ---------------------------------------------------------------------
+        # STEP 6: MODEL CHECKPOINTING AND EARLY STOPPING
+        # ---------------------------------------------------------------------
+        
+        # Save best model if significant improvement is achieved
         if not np.isnan(avg_loss) and avg_loss < best_loss - min_delta:
             best_loss = avg_loss
-            patience_counter = 0
+            patience_counter = 0  # Reset patience counter
             save_path = os.path.join(args.checkpoint_dir, 'model-best.pt')
             
+            # Prepare EMA state dictionary for saving
             ema_state_dict = {
                 k: v.clone() for k, v in zip((p[0] for p in model.named_parameters()), ema.shadow_params)
             }
             
+            # Save comprehensive checkpoint
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'ema_state_dict': ema_state_dict,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
+                'loss_history': loss_history,
+                'kl_history': kl_history,
+                'rec_history': rec_history
             }, save_path)
-            logging.info(f'√ Saved best model (loss: {best_loss:.4f}) to {save_path}')
+            logging.info(f'✓ Saved best model (loss: {best_loss:.4f}) to {save_path}')
         else:
             patience_counter += 1
-            logging.info(f"Model performance did not improve significantly, patience counter: {patience_counter}/{patience}")
+            logging.info(f"No improvement, patience: {patience_counter}/{patience}")
 
+        # Periodic backup checkpoints
         if epoch > 0 and epoch % args.iter_save == 0:
             backup_path = os.path.join(args.checkpoint_dir, f'model-epoch-{epoch}.pt')
             torch.save({
@@ -409,68 +463,104 @@ def train_model(model: CausalVAE,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss
             }, backup_path)
-            logging.info(f'√ Saved periodic checkpoint to {backup_path}')
+            logging.info(f'✓ Saved periodic checkpoint to {backup_path}')
 
+        # Early stopping check
         if patience_counter >= patience:
-            logging.warning(f"Performance has not improved for {patience} consecutive epochs, triggering early stopping.")
+            logging.warning(f"Early stopping triggered: no improvement for {patience} epochs.")
             break
 
-        # --- Visualization and Learning Rate Scheduling ---
+        # ---------------------------------------------------------------------
+        # STEP 7: LEARNING RATE SCHEDULING AND VISUALIZATION
+        # ---------------------------------------------------------------------
+        
+        # Generate training curves periodically for monitoring
         if epoch % 5 == 0 or epoch == args.epoch_max - 1:
             plot_training_curves(loss_history, kl_history, rec_history, args.results_dir)
             
+        # Learning rate reduction on plateau
         scheduler.step(avg_loss)
         
-        # --- Dynamic Adjustments and Heuristics ---
-        if epoch > 20 and avg_rec < 1.0:
-            kl_weight = min(1.5, kl_weight * 1.05)
-            if avg_kl < 0.05:
-                kl_weight = kl_weight * 1.1
+        # ---------------------------------------------------------------------
+        # STEP 8: ADAPTIVE TRAINING ADJUSTMENTS
+        # ---------------------------------------------------------------------
         
+        # Adaptive KL weight adjustment based on reconstruction quality
+        if epoch > 20 and avg_rec < 1.0:  # If reconstruction is too good
+            kl_weight = min(1.5, kl_weight * 1.05)  # Increase KL weight
+            if avg_kl < 0.05:  # If KL is too low
+                kl_weight = kl_weight * 1.1  # Further increase
+        
+        # DAG sparsity monitoring and adjustment
         if epoch % 5 == 0:
             dag_matrix = model.dag.A.detach().cpu().numpy()
             non_zero_ratio = (np.abs(dag_matrix) > 1e-4).mean()
-            logging.info(f"DAG matrix non-zero element ratio: {non_zero_ratio:.4f}")
+            logging.info(f"DAG sparsity: {non_zero_ratio:.4f} non-zero ratio")
+            
+            # Add exploration noise if DAG becomes too sparse
             if non_zero_ratio < 0.05:
-                logging.warning("DAG matrix is too sparse, adding random noise...")
+                logging.warning("DAG too sparse, adding exploration noise...")
                 with torch.no_grad():
                     noise = 0.05 * torch.randn_like(model.dag.A)
-                    mask = torch.rand_like(model.dag.A) > 0.8
+                    mask = torch.rand_like(model.dag.A) > 0.8  # Sparse noise mask
                     model.dag.A.data += noise * mask.float()
-                    model.dag.A.data.fill_diagonal_(0)
+                    model.dag.A.data.fill_diagonal_(0)  # Maintain no self-loops
         
+        # Training stability monitoring
         last_losses.append(avg_loss)
-        if len(last_losses) > 5: last_losses.pop(0)
+        if len(last_losses) > 5: 
+            last_losses.pop(0)  # Keep only recent losses
+            
+        # Detect consecutive loss increases (training instability)
         if len(last_losses) >= 3 and avg_loss > last_losses[-2] > last_losses[-3]:
             unstable_count += 1
-            logging.warning(f"Loss has increased for {unstable_count} consecutive iterations.")
+            logging.warning(f"Training instability: {unstable_count} consecutive loss increases.")
+            
+            # Emergency learning rate reduction
             if unstable_count >= 3:
-                logging.critical("Training may be unstable! Reducing learning rate.")
+                logging.critical("Severe training instability! Reducing learning rate.")
                 for pg in optimizer.param_groups:
-                    pg['lr'] *= 0.1
+                    pg['lr'] *= 0.1  # Reduce learning rate by 10x
                 logging.info(f"Learning rate reduced to {optimizer.param_groups[0]['lr']}")
                 unstable_count = 0
         else:
-            unstable_count = 0
+            unstable_count = 0  # Reset if training is stable
 
-    # --- Training End ---
-    logging.info("Training complete. Generating final analysis charts...")
+    # =========================================================================
+    # POST-TRAINING ANALYSIS AND FINAL RESULTS
+    # =========================================================================
+    
+    logging.info("Training completed! Generating comprehensive analysis...")
+    
+    # Generate final training curves
     plot_training_curves(loss_history, kl_history, rec_history, args.results_dir)
     
-    # Load the best model for analysis
+    # Load best model for analysis (ensures we analyze the best-performing version)
     best_model_path = os.path.join(args.checkpoint_dir, 'model-best.pt')
     if os.path.exists(best_model_path):
-        logging.info(f"Loading best model {best_model_path} for final analysis.")
+        logging.info(f"Loading best model from {best_model_path} for analysis...")
         checkpoint = torch.load(best_model_path)
         model.load_state_dict(checkpoint['model_state_dict'])
+        logging.info(f"Best model loaded: epoch {checkpoint['epoch']}, loss {checkpoint['loss']:.4f}")
 
-    # Generate final visualization reports
+    # Generate comprehensive causal analysis visualizations
+    logging.info("Generating causal structure analysis...")
+    
+    # 1. Label-to-label relationship heatmap
     visualize_causal_graph(model, args.results_dir, label_names)
+    
+    # 2. Complete DAG network visualization
     visualize_complete_dag(model, args.results_dir, element_names, label_names)
+    
+    # 3. Statistical analysis of causal relationships
     analyze_label_element_relationships(model, args.results_dir, element_names, label_names)
+    
+    # 4. Comprehensive influence heatmap
     visualize_label_element_heatmap(model, args.results_dir, element_names, label_names)
     
-    logging.info(f"All analysis charts have been saved to the '{args.results_dir}' directory.")
+    logging.info(f"✓ All analysis results saved to '{args.results_dir}' directory.")
+    logging.info("Training and analysis pipeline completed successfully!")
+    
     return loss_history, kl_history, rec_history
 
 
@@ -733,51 +823,99 @@ def visualize_label_element_heatmap(model, save_dir, element_names, label_names)
         traceback.print_exc()
         plt.close()
 
+# =============================================================================
+# MAIN EXECUTION PIPELINE
+# =============================================================================
+
 if __name__ == '__main__':
-    # Set random seeds
-    torch.manual_seed(42)
-    np.random.seed(42)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
     
+    # -------------------------------------------------------------------------
+    # STEP 1: REPRODUCIBILITY AND ENVIRONMENT SETUP
+    # -------------------------------------------------------------------------
+    
+    # Set random seeds for reproducible results
+    torch.manual_seed(42)              # PyTorch random seed
+    np.random.seed(42)                 # NumPy random seed
+    torch.backends.cudnn.benchmark = True      # Optimize CUDA performance
+    torch.backends.cudnn.deterministic = False  # Allow some randomness for speed
+    
+    # Parse command line arguments
     args = get_args()
     
-    os.makedirs(args.results_dir, exist_ok=True)
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    # Create output directories
+    os.makedirs(args.results_dir, exist_ok=True)      # For plots and analysis
+    os.makedirs(args.checkpoint_dir, exist_ok=True)   # For model checkpoints
     
-    logging.info("Starting to load and preprocess data...")
+    # -------------------------------------------------------------------------
+    # STEP 2: DATA LOADING AND PREPROCESSING
+    # -------------------------------------------------------------------------
+    
+    logging.info("="*60)
+    logging.info("ICVAE TRAINING PIPELINE STARTED")
+    logging.info("="*60)
+    
+    logging.info("Loading and preprocessing geochemical data...")
     X_norm, y, element_names, label_names = load_data(args.data_path, verbose=True)
-    logging.info("Data loading complete.")
+    logging.info("✓ Data loading and preprocessing completed.")
     
+    # Create optimized data loader for training
     train_loader = create_data_loaders(X_norm, y, args.batch_size, args.num_workers)
     
-    num_elements = X_norm.shape[1]
-    num_labels = y.shape[1]
+    # -------------------------------------------------------------------------
+    # STEP 3: MODEL INITIALIZATION
+    # -------------------------------------------------------------------------
     
+    # Extract data dimensions
+    num_elements = X_norm.shape[1]  # Should be 39 geochemical elements
+    num_labels = y.shape[1]         # Should be 3 geological labels
+    
+    # Initialize ICVAE model with specified architecture
     model = CausalVAE(
-        nn_type='mask',
-        z_dim=args.z_dim, # Use command-line argument
-        z1_dim=num_labels,
-        z2_dim=num_elements,
-        concept=num_labels, # Keep consistent with number of labels
-        initial=args.initial
+        nn_type='mask',              # Use mask-based neural networks
+        z_dim=args.z_dim,           # VAE latent space dimension
+        z1_dim=num_labels,          # Geological label dimension (3)
+        z2_dim=num_elements,        # Geochemical element dimension (39)
+        concept=num_labels,         # Number of geological concepts
+        initial=args.initial        # Whether to randomly initialize DAG
     ).to(device)
 
+    # Initialize AdamW optimizer with weight decay
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
-        eps=1e-8
+        lr=args.learning_rate,      # Learning rate
+        weight_decay=args.weight_decay,  # L2 regularization
+        eps=1e-8                    # Numerical stability
     )
     
-    logging.info("\n--- Training Configuration ---")
-    logging.info(f"Device: {device}")
-    logging.info(f"Latent Variable Dimension (z_dim): {args.z_dim}")
-    logging.info(f"Batch Size: {args.batch_size}")
-    logging.info(f"Max Epochs: {args.epoch_max}")
-    logging.info(f"Learning Rate: {args.learning_rate}")
-    logging.info(f"Number of Elements: {num_elements}, Number of Labels: {num_labels}")
+    # -------------------------------------------------------------------------
+    # STEP 4: TRAINING CONFIGURATION SUMMARY
+    # -------------------------------------------------------------------------
     
+    logging.info("\n" + "="*50)
+    logging.info("TRAINING CONFIGURATION SUMMARY")
+    logging.info("="*50)
+    logging.info(f"Computing Device: {device}")
+    logging.info(f"Model Architecture: CausalVAE")
+    logging.info(f"  - VAE Latent Dimension: {args.z_dim}")
+    logging.info(f"  - Geological Labels: {num_labels}")
+    logging.info(f"  - Geochemical Elements: {num_elements}")
+    logging.info(f"Training Parameters:")
+    logging.info(f"  - Maximum Epochs: {args.epoch_max}")
+    logging.info(f"  - Batch Size: {args.batch_size}")
+    logging.info(f"  - Learning Rate: {args.learning_rate}")
+    logging.info(f"  - Weight Decay: {args.weight_decay}")
+    logging.info(f"Output Directories:")
+    logging.info(f"  - Results: {args.results_dir}")
+    logging.info(f"  - Checkpoints: {args.checkpoint_dir}")
+    logging.info("="*50 + "\n")
+    
+    # -------------------------------------------------------------------------
+    # STEP 5: MODEL TRAINING
+    # -------------------------------------------------------------------------
+    
+    # Execute main training loop
     train_model(model, train_loader, optimizer, args, element_names, label_names)
 
-    logging.info("Script execution finished.")
+    logging.info("\n" + "="*60)
+    logging.info("ICVAE TRAINING PIPELINE COMPLETED SUCCESSFULLY")
+    logging.info("="*60)
