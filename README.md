@@ -1,5 +1,5 @@
 # An-interpretable-causal-variational-autoencoder
-This code implements the Interpretable Causal Variational Autoencoder (ICVAE) framework that combines variational autoencoders with causal structure learning to discover causal relationships in geochemical data. The model integrates DAG (Directed Acyclic Graph) constraints with deep generative modeling to learn interpretable causal structures from 39 geochemical elements and 3 geological labels. The framework enables both data reconstruction and causal inference for geological domain applications.
+This code implements the Interpretable Causal Variational Autoencoder (ICVAE) framework by integrating DAG (Directed Acyclic Graph) constraints into variational autoencoders to discover causal relationships in geochemical data. **ICVAE** is used as the main training and analysis module to learn causal structures from geological data. The **reconstruction module** handles data reconstruction using trained models for validation. The **utils module** provides mathematical operations for VAE computations and DAG constraint enforcement, while the **CausalVAE model** defines the core neural architecture and the **neural network module** implements encoder-decoder architectures.
 
 ## Environment
 This code was developed and tested in the following environment:
@@ -18,6 +18,20 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install numpy pandas scikit-learn matplotlib seaborn networkx
 ```
 
+## File Structure & Functions
+```
+research/ICVAE/
+├── ICVAE.py                    # 🚀 MAIN SCRIPT - Training, analysis, visualization
+├── reconstruct_data.py         # 🔄 Data reconstruction using trained models  
+├── README.md                   # 📖 This documentation file
+├── codebase/                   # 🧠 Core model implementation
+│   ├── utils.py               # 🔧 Math utilities: VAE operations, DAG constraints
+│   └── models/
+│       ├── mask_vae.py        # 🎯 CausalVAE model: encoder+decoder+DAG layer
+│       └── nns/
+│           └── mask.py        # 🏗️ Neural networks: Encoder/Decoder architectures
+```
+        
 ## License
 This project is licensed under the MIT License. See the LICENSE file for more details.
 
