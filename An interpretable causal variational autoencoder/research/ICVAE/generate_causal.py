@@ -22,7 +22,7 @@ def generate_complete_causal_analysis():
     print(f"Using device: {device}")
     
     try:
-        data_set = pd.read_csv(os.path.join(project_root, 'research/CausalVAE/data/南岭/南岭化探.csv'), encoding='GBK')
+        data_set = pd.read_csv(os.path.join(project_root, 'data'), encoding='GBK')
         element_names = data_set.columns[:39].tolist()
         label_names = data_set.columns[-3:].tolist()
         
