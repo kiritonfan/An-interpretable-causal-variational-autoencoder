@@ -1,4 +1,3 @@
-
 import os
 import sys
 import torch
@@ -20,9 +19,7 @@ def setup_paths():
 setup_paths()
 
 from codebase import utils as ut
-from codebase.models import nns
 from codebase.models.nns import mask
-from codebase.models.utils import compute_dag_constraint
 
 def _get_optimal_device() -> torch.device:
     if not torch.cuda.is_available():
@@ -80,6 +77,7 @@ class CausalVAE(nn.Module):
         self.device = device if device else _get_optimal_device()
         
         self._validate_dimensions()
+        # Initialize all model components (encoder, DAG layer, decoder, prior)
         self._init_components(initial)
         
         self.to(self.device)
@@ -111,6 +109,10 @@ class CausalVAE(nn.Module):
             self._init_element_relations()
 
     def _init_prior_network(self):
+        """Build a small MLP that maps discrete labels to the conditional prior
+        parameters (mean and variance) of the VAE latent variable. This enables
+        label-conditional generation and tighter ELBO bounds.
+        """
         self.prior_network = nn.Sequential(
             nn.Linear(self.z1_dim, 128),
             nn.BatchNorm1d(128),
@@ -128,6 +130,12 @@ class CausalVAE(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def _init_element_relations(self):
+        """Optional direct parameterization for label↔element relations.
+
+        These parameters are not directly optimized in the loss but serve as
+        interpretable hooks for inspecting direct associations in addition to
+        the DAG-induced structure.
+        """
         self.label_to_element = nn.Parameter(torch.zeros(self.z1_dim, self.z2_dim))
         self.element_to_label = nn.Parameter(torch.zeros(self.z2_dim, self.z1_dim))
         
@@ -172,6 +180,10 @@ class CausalVAE(nn.Module):
                           x: torch.Tensor, 
                           label: torch.Tensor,
                           use_conditional_prior: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute the negative ELBO and its components.
+
+        Returns a tuple of (NELBO, KL, Reconstruction). All values are scalars.
+        """
         try:
             outputs = self.forward(x, label)
             x_hat = outputs['x_recon']
@@ -202,6 +214,7 @@ class CausalVAE(nn.Module):
              kl_weight: float = 0.5,
              dag_weight: float = 0.1,
              use_conditional_prior: bool = True) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """Total training loss combining reconstruction, KL, and DAG penalties."""
         _, kl_raw, rec = self.negative_elbo_bound(x, label, use_conditional_prior=use_conditional_prior)
         
         dag_loss_structural, sparsity_loss_A = self._compute_dag_losses()
@@ -225,6 +238,7 @@ class CausalVAE(nn.Module):
         return total_loss, summaries
 
     def _compute_dag_losses(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute acyclicity and sparsity losses for the DAG adjacency matrix."""
         dag_param = self.dag.A
         
         h_a = self._h_A_robust(dag_param, dag_param.shape[0])
@@ -249,6 +263,7 @@ class CausalVAE(nn.Module):
         }
 
     def get_conditional_prior_params(self, label: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Given labels, return mean and variance of the conditional prior p(z|label)."""
         label = self._ensure_tensor(label)
         if label.dim() == 1: label = label.unsqueeze(0)
         if label.size(0) == 0: return torch.empty(0, self.z_dim, device=self.device), torch.empty(0, self.z_dim, device=self.device)
@@ -269,9 +284,11 @@ class CausalVAE(nn.Module):
         return p_m_raw + torch.sqrt(p_v_raw) * epsilon
 
     def reconstruct(self, x: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
+        """Reconstruct inputs given labels by passing through encoder, DAG, and decoder."""
         return self.forward(x, label)['x_recon']
 
     def get_dag_params(self) -> torch.Tensor:
+        """Return a copy of the learned DAG adjacency with zeroed diagonal."""
         dag_matrix = self.dag.A.detach().clone()
         dag_matrix.fill_diagonal_(0)
         return dag_matrix
@@ -291,6 +308,7 @@ class CausalVAE(nn.Module):
         return relations
 
     def perform_do_operation(self, interventions: Dict[str, float], all_names: List[str], batch_size: int = 1000) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Perform a simple do-intervention on the structural model and decode outputs."""
         self.eval()
         with torch.no_grad():
             n = torch.randn(batch_size, self.dag.total_dim, device=self.device)
@@ -310,7 +328,7 @@ class CausalVAE(nn.Module):
             return reconstructed_output, z_structured
 
     def _h_A_robust(self, A: torch.Tensor, m: int) -> torch.Tensor:
-        return compute_dag_constraint(A, m)
+        return ut.compute_dag_constraint(A, m)
 
     def _ensure_tensor(self, x: Any) -> torch.Tensor:
         if not torch.is_tensor(x):
@@ -350,11 +368,16 @@ class DagLayer(nn.Module):
         logger.info(f"DAG layer initialized: total_dim={self.total_dim} on device {self.device}")
 
     def _initialize_parameters(self):
+        """Xavier-initialize adjacency and zero the diagonal to avoid self-loops."""
         nn.init.xavier_uniform_(self.A, gain=0.1)
         with torch.no_grad():
             self.A.fill_diagonal_(0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute (I - A)^-1 x where A is masked to exclude diagonal.
+
+        Falls back to pseudo-inverse if direct inversion fails for numerical reasons.
+        """
         batch_size = x.size(0)
         
         if x.size(1) != self.total_dim:
@@ -383,4 +406,5 @@ class DagLayer(nn.Module):
 
     @property
     def dag_constraint_value(self) -> torch.Tensor:
-        return compute_dag_constraint(self.A, self.total_dim)
+        return ut.compute_dag_constraint(self.A, self.total_dim)
+
