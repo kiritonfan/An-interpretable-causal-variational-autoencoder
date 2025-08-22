@@ -4,11 +4,6 @@ Neural network architectures for the Causal Variational Autoencoder.
 This module implements the encoder and decoder networks used in the ICVAE model.
 The encoder maps input data to latent representations, while the decoder reconstructs
 data from the structured latent variables obtained through the DAG layer.
-
-Key components:
-- Encoder: Maps geochemical element data to latent mean and variance
-- Decoder_DAG: Reconstructs element data from structured latent variables
-- Dimension checking utilities for robust tensor operations
 """
 
 import os
