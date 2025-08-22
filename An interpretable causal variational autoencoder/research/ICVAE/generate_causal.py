@@ -1,3 +1,12 @@
+"""
+Causal analysis generator for geochemical data.
+
+Extracts learned causal relationships from trained ICVAE model and generates:
+- Detailed causal effect analysis report
+- Heatmap visualization of causal influences
+- Statistical summary of geological label → element relationships
+"""
+
 import os
 import sys
 import torch
@@ -14,13 +23,20 @@ sys.path.append(project_root)
 from codebase.models.mask_vae import CausalVAE
 
 def generate_complete_causal_analysis():
-    """Generates a complete causal analysis from labels to elements."""
+    """
+    Generate complete causal analysis from trained ICVAE model.
+    
+    Loads trained model and extracts DAG adjacency matrix to analyze
+    causal relationships between geological labels and geochemical elements.
+    Outputs text report and heatmap visualization.
+    """
     
     print("Starting complete causal analysis generation...")
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # Load element and label names from dataset
     try:
         data_set = pd.read_csv(os.path.join(project_root, 'data'), encoding='GBK')
         element_names = data_set.columns[:39].tolist()
@@ -34,21 +50,24 @@ def generate_complete_causal_analysis():
         label_names = ["Fault", "Granite", "Ore-controlling strata"]
         print("Using default element and label names.")
     
+    # Load trained ICVAE model
     model_path = os.path.join(project_root, 'checkpoints/causalvae_geo/model-best.pt')
     if not os.path.exists(model_path):
         print(f"Error: Model file not found at {model_path}")
         return
     
+    # Initialize model with same architecture as training
     model = CausalVAE(
         nn_type='mask',
-        z_dim=39,
-        z1_dim=3,
-        z2_dim=39,
-        concept=3,
+        z_dim=39,           # VAE latent dimension
+        z1_dim=3,           # Number of geological labels  
+        z2_dim=39,          # Number of geochemical elements
+        concept=3,          # Number of concept categories
         element_relations=True,
         initial=True
     ).to(device)
     
+    # Load trained weights
     try:
         checkpoint = torch.load(model_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -62,19 +81,23 @@ def generate_complete_causal_analysis():
     results_dir = os.path.join(project_root, 'results')
     os.makedirs(results_dir, exist_ok=True)
     
+    # Extract learned causal structure from DAG adjacency matrix
     try:
         A = model.dag.A.cpu().detach().numpy()
         
+        # Extract label→element causal effects from adjacency matrix
         label_count = len(label_names)
         element_count = len(element_names)
         causal_effects = A[:label_count, label_count:label_count+element_count]
         
+        # Analyze and categorize causal relationships
         causal_relations = []
         
         for i in range(label_count):
             for j in range(element_count):
                 effect_size = causal_effects[i, j]
                 
+                # Categorize effect strength
                 if effect_size > 0.1:
                     effect_type = "Strong positive"
                 elif effect_size < -0.1:
@@ -95,8 +118,10 @@ def generate_complete_causal_analysis():
                     effect_type
                 ))
         
+        # Sort by absolute effect strength
         causal_relations.sort(key=lambda x: abs(x[2]), reverse=True)
         
+        # Generate detailed causal analysis report
         with open(os.path.join(results_dir, 'complete_causal_analysis.txt'), 'w', encoding='utf-8') as f:
             f.write("========== Complete Causal Effect Analysis between Geological Structures and Element Enrichment ==========\n\n")
             f.write("Notes:\n")
@@ -133,15 +158,17 @@ def generate_complete_causal_analysis():
         print(f"Successfully generated complete causal analysis file: {os.path.join(results_dir, 'complete_causal_analysis.txt')}")
         print(f"Analyzed {len(causal_relations)} causal relationships.")
         
+        # Generate causal influence heatmap visualization
         plt.figure(figsize=(20, 8))
         
         causal_matrix = causal_effects.copy()
         
+        # Create heatmap with diverging colormap centered at zero
         sns.heatmap(causal_matrix, 
-                  cmap='RdBu_r',
-                  center=0,
-                  annot=True,
-                  fmt='.2f',
+                  cmap='RdBu_r',          # Red-Blue diverging colormap
+                  center=0,               # Center colormap at zero
+                  annot=True,             # Show numerical values
+                  fmt='.2f',              # Format numbers to 2 decimals
                   linewidths=.5,
                   xticklabels=element_names,
                   yticklabels=label_names,
@@ -166,5 +193,7 @@ def generate_complete_causal_analysis():
         import traceback
         traceback.print_exc()
 
+# Run causal analysis if executed directly
 if __name__ == "__main__":
     generate_complete_causal_analysis() 
+
