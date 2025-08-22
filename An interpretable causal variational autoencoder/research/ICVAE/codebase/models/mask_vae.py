@@ -1,3 +1,16 @@
+"""
+Causal Variational Autoencoder (CausalVAE) implementation.
+
+Core model architecture integrating variational autoencoders with directed
+acyclic graph (DAG) constraints for causal structure learning in geochemical data.
+
+Key components:
+- CausalVAE: Main model combining encoder, decoder, and DAG layer
+- DagLayer: Implements structural causal constraints via adjacency matrix
+- Conditional prior network: Label-conditioned latent variable generation
+- Loss functions: ELBO + DAG acyclicity + sparsity constraints
+"""
+
 import os
 import sys
 import torch
@@ -22,6 +35,7 @@ from codebase import utils as ut
 from codebase.models.nns import mask
 
 def _get_optimal_device() -> torch.device:
+    """Select best available GPU device based on memory capacity."""
     if not torch.cuda.is_available():
         return torch.device("cpu")
     
@@ -29,6 +43,7 @@ def _get_optimal_device() -> torch.device:
     if device_count == 1:
         return torch.device("cuda:0")
     
+    # Choose GPU with maximum memory for complex causal models
     max_memory = 0
     best_device_index = 0
     for i in range(device_count):
@@ -40,12 +55,15 @@ def _get_optimal_device() -> torch.device:
 
 
 class ModelConfig:
+    """Global configuration for model training and numerical stability."""
+    
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.seed = 42
-        self.eps = 1e-6
+        self.seed = 42          # Reproducibility seed
+        self.eps = 1e-6         # Numerical stability epsilon
 
     def set_seed(self):
+        """Set random seeds for reproducible training."""
         torch.manual_seed(self.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
@@ -54,17 +72,45 @@ config = ModelConfig()
 config.set_seed()
 
 class CausalVAE(nn.Module):
+    """
+    Causal Variational Autoencoder for learning structured representations.
+    
+    Integrates VAE with DAG constraints to discover causal relationships between
+    geological labels and geochemical elements. The model enforces structural
+    causality through learnable adjacency matrices while maintaining VAE's
+    generative capabilities.
+    
+    Architecture:
+        Input → Encoder → Latent(z) → DAG Layer → Structured(z') → Decoder → Output
+        
+    Key features:
+    - Conditional prior based on geological labels
+    - DAG-constrained causal structure learning  
+    - Interpretable causal relationship extraction
+    - Multi-loss training with ELBO + DAG penalties
+    """
+    
     def __init__(self, 
                  nn_type: str = 'mask', 
                  name: str = 'vae',
-                 z_dim: int = 117, 
-                 z1_dim: int = 3,
-                 z2_dim: int = 39,
-                 concept: int = 3,
+                 z_dim: int = 117,      # Total VAE latent dimension
+                 z1_dim: int = 3,       # Geological label dimension
+                 z2_dim: int = 39,      # Geochemical element dimension
+                 concept: int = 3,      # Number of concept categories
                  element_relations: bool = True, 
                  initial: bool = True,
                  device: Optional[torch.device] = None):
-
+        """
+        Initialize CausalVAE with specified architecture and dimensions.
+        
+        Args:
+            z_dim: VAE latent space dimension (typically z1_dim + z2_dim + extra)
+            z1_dim: Number of geological label variables
+            z2_dim: Number of geochemical element variables  
+            concept: Number of geological concept categories
+            element_relations: Whether to learn direct label-element relations
+            initial: Whether to initialize parameters with Xavier initialization
+        """
         super().__init__()
         
         self.name = name
@@ -77,41 +123,52 @@ class CausalVAE(nn.Module):
         self.device = device if device else _get_optimal_device()
         
         self._validate_dimensions()
-        # Initialize all model components (encoder, DAG layer, decoder, prior)
         self._init_components(initial)
         
         self.to(self.device)
         logger.info(f"CausalVAE initialized: z_dim(VAE)={z_dim}, z1_dim(labels)={z1_dim}, z2_dim(elements)={z2_dim}")
 
     def _validate_dimensions(self):
+        """Validate model dimension consistency and warn about potential issues."""
         if self.z1_dim <= 0 or self.z2_dim <= 0:
             raise ValueError("Label and element dimensions must be positive.")
         if self.z_dim < self.z2_dim:
             logger.warning(f"VAE latent dimension ({self.z_dim}) is less than element dimension ({self.z2_dim}), which might be unintended.")
 
     def _init_components(self, initial: bool):
+        """Initialize all model components: encoder, decoder, DAG layer, and prior network."""
+        # VAE encoder: elements → latent distribution parameters
         self.encoder = mask.Encoder(z_dim=self.z_dim, num_features=self.z2_dim)
+        
+        # Project full latent space to element-specific latent space
         self.project_z_to_elements = nn.Linear(self.z_dim, self.z2_dim)
+        
+        # VAE decoder: structured latent → reconstructed elements
         self.decoder = mask.Decoder_DAG(
             z_dim=self.z2_dim,
             concept=self.concept, 
             z1_dim=self.z1_dim,
             z2_dim=self.z2_dim
         )
+        
+        # DAG layer: enforces causal structure constraints
         self.dag = DagLayer(
             z1_dim=self.z1_dim, 
             z2_dim=self.z2_dim, 
             initial=initial
         )
+        
         self._init_prior_network()
         
         if self.element_relations:
             self._init_element_relations()
 
     def _init_prior_network(self):
-        """Build a small MLP that maps discrete labels to the conditional prior
-        parameters (mean and variance) of the VAE latent variable. This enables
-        label-conditional generation and tighter ELBO bounds.
+        """
+        Build conditional prior network: labels → VAE latent distribution parameters.
+        
+        Maps geological labels to mean and variance of latent distribution,
+        enabling label-conditional generation and improved ELBO bounds.
         """
         self.prior_network = nn.Sequential(
             nn.Linear(self.z1_dim, 128),
@@ -122,8 +179,10 @@ class CausalVAE(nn.Module):
             nn.BatchNorm1d(256),
             nn.ELU(),
             nn.Dropout(0.1),
-            nn.Linear(256, 2 * self.z_dim)
+            nn.Linear(256, 2 * self.z_dim)  # Output: mean + logvar for latent prior
         )
+        
+        # Conservative initialization for stable prior learning
         for module in self.prior_network:
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight, gain=0.1)
@@ -145,27 +204,49 @@ class CausalVAE(nn.Module):
         self.register_buffer('causal_strength', torch.zeros(self.z1_dim, self.z2_dim))
 
     def forward(self, x: torch.Tensor, label: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass: encode → sample → DAG transform → decode.
+        
+        Core CausalVAE inference combining variational encoding with structural
+        causal processing through the DAG layer.
+        
+        Args:
+            x: Input geochemical element data [batch_size, z2_dim]
+            label: Geological labels [batch_size, z1_dim]
+            
+        Returns:
+            Dictionary containing reconstruction and distribution parameters
+        """
         x = x.to(self.device)
         label = self._ensure_tensor(label).to(self.device)
         
+        # VAE encoding: elements → latent distribution parameters
         q_m_raw, q_v_raw_unactivated = self.encoder.encode(x)
-        q_v_raw = F.softplus(q_v_raw_unactivated) + config.eps
+        q_v_raw = F.softplus(q_v_raw_unactivated) + config.eps  # Ensure positive variance
         z_raw = ut.sample_gaussian(q_m_raw, q_v_raw)
 
+        # Project latent sample to element-specific noise term
         element_noise = self.project_z_to_elements(z_raw)
+        
+        # Combine labels with element noise for DAG processing
         dag_exogenous_input = torch.cat((label, element_noise), dim=1)
 
+        # Apply DAG transformation: (I - A)^(-1) * input
         z_structured = self.dag(dag_exogenous_input)
         
+        # Handle root nodes (no incoming edges) - use original input
         with torch.no_grad():
             A = self.dag.A
             is_root_node_mask = torch.sum(torch.abs(A), dim=1) == 0
         z_for_decoder_input = torch.where(is_root_node_mask, dag_exogenous_input, z_structured)
 
+        # Extract element portion for reconstruction
         z_elements_for_decoding = z_for_decoder_input[:, self.z1_dim:]
         
+        # Decode structured latent variables to element concentrations
         x_recon = self.decoder.decode(z_elements_for_decoding)
         
+        # Get label-conditional prior parameters
         p_m_raw, p_v_raw = self.get_conditional_prior_params(label)
         
         return {
@@ -180,21 +261,28 @@ class CausalVAE(nn.Module):
                           x: torch.Tensor, 
                           label: torch.Tensor,
                           use_conditional_prior: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute the negative ELBO and its components.
-
-        Returns a tuple of (NELBO, KL, Reconstruction). All values are scalars.
+        """
+        Compute negative Evidence Lower BOund (ELBO) for VAE training.
+        
+        ELBO = E[log p(x|z)] - KL[q(z|x) || p(z|label)]
+        
+        Returns:
+            Tuple of (negative_ELBO, KL_divergence, reconstruction_loss)
         """
         try:
             outputs = self.forward(x, label)
             x_hat = outputs['x_recon']
             q_m_raw, q_v_raw = outputs['q_m_raw'], outputs['q_v_raw']
             
+            # Use conditional or standard prior based on flag
             p_m_raw, p_v_raw = (outputs['p_m_raw'], outputs['p_v_raw']) if use_conditional_prior else \
                                (torch.zeros_like(q_m_raw), torch.ones_like(q_v_raw))
             
+            # KL divergence: posterior vs prior
             kl_raw = ut.kl_normal(q_m_raw, q_v_raw, p_m_raw, p_v_raw)
             kl_raw = self._ensure_scalar(kl_raw.sum(dim=-1))
 
+            # Reconstruction loss: MSE between input and output
             x_hat = self._match_tensor_shapes(x, x_hat)
             rec = F.mse_loss(x_hat, x, reduction='mean')
             
@@ -214,18 +302,30 @@ class CausalVAE(nn.Module):
              kl_weight: float = 0.5,
              dag_weight: float = 0.1,
              use_conditional_prior: bool = True) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Total training loss combining reconstruction, KL, and DAG penalties."""
+        """
+        Complete training loss: ELBO + DAG constraints.
+        
+        Combines variational objective with structural causal penalties:
+        - Reconstruction loss: data fidelity
+        - KL loss: regularization 
+        - DAG acyclicity: prevent cycles in causal graph
+        - Sparsity: encourage sparse causal connections
+        """
         _, kl_raw, rec = self.negative_elbo_bound(x, label, use_conditional_prior=use_conditional_prior)
         
+        # Compute DAG-specific penalty terms
         dag_loss_structural, sparsity_loss_A = self._compute_dag_losses()
         
+        # Ensure minimum DAG weight for structural learning
         dag_weight = max(0.01, dag_weight)
         
+        # Weighted combination of all loss terms
         total_loss = (rec_weight * rec + 
                       kl_weight * kl_raw + 
                       dag_weight * dag_loss_structural + 
                       sparsity_loss_A)
         
+        # Safety check for numerical stability
         if torch.isnan(total_loss):
             logger.warning("NaN loss detected, replacing with a safe value.")
             total_loss = torch.tensor(1.0, device=self.device, requires_grad=True)
@@ -238,13 +338,21 @@ class CausalVAE(nn.Module):
         return total_loss, summaries
 
     def _compute_dag_losses(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute acyclicity and sparsity losses for the DAG adjacency matrix."""
+        """
+        Compute DAG constraint penalties: acyclicity and sparsity.
+        
+        Returns:
+            acyclicity_loss: Penalty for cycles in the graph (h(A) constraint)
+            sparsity_loss: L1 penalty encouraging sparse adjacency matrix
+        """
         dag_param = self.dag.A
         
+        # Acyclicity constraint: h(A) = tr(e^(A◦A)) - d should be 0 for DAGs
         h_a = self._h_A_robust(dag_param, dag_param.shape[0])
-        h_a = torch.clamp(h_a, min=config.eps)
-        dag_loss_structural = h_a + 0.5 * h_a * h_a
+        h_a = torch.clamp(h_a, min=config.eps)  # Avoid negative values
+        dag_loss_structural = h_a + 0.5 * h_a * h_a  # Quadratic penalty
         
+        # Sparsity penalty: encourage few causal connections
         sparsity_loss_A = 0.05 * torch.sum(torch.abs(dag_param))
         
         return self._ensure_scalar(dag_loss_structural), self._ensure_scalar(sparsity_loss_A)
@@ -352,14 +460,34 @@ class CausalVAE(nn.Module):
 
 
 class DagLayer(nn.Module):
+    """
+    Directed Acyclic Graph (DAG) layer for structural causal modeling.
+    
+    Implements the core causal transformation z = (I - A)^(-1) * ε where:
+    - A is a learnable adjacency matrix (with zero diagonal)
+    - ε are exogenous noise variables (labels + element noise)
+    - z are the resulting structured variables after causal processing
+    
+    The DAG constraint ensures A represents a valid causal structure without cycles.
+    """
+    
     def __init__(self, z1_dim: int = 3, z2_dim: int = 39, initial: bool = True):
+        """
+        Initialize DAG layer with specified variable dimensions.
+        
+        Args:
+            z1_dim: Number of geological label variables
+            z2_dim: Number of geochemical element variables  
+            initial: Whether to apply Xavier initialization to adjacency matrix
+        """
         super().__init__()
         
         self.z1_dim = z1_dim
         self.z2_dim = z2_dim
-        self.total_dim = z1_dim + z2_dim
+        self.total_dim = z1_dim + z2_dim  # Combined variable space
         self.device = _get_optimal_device()
 
+        # Learnable adjacency matrix A[i,j] = causal effect from j → i
         self.A = nn.Parameter(torch.zeros(self.total_dim, self.total_dim, device=self.device))
         
         if initial:
