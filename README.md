@@ -1,10 +1,10 @@
 # An-interpretable-causal-variational-autoencoder
-This code implements the Interpretable Causal Variational Autoencoder (ICVAE) framework by integrating DAG (Directed Acyclic Graph) constraints into variational autoencoders to discover causal relationships in geochemical data. ICVAE is used as the main training and analysis module to learn causal structures from geological data. The reconstruction module handles data reconstruction using trained models for validation. The utils module provides mathematical operations for VAE computations and DAG constraint enforcement, while the CausalVAE model defines the core neural architecture and the neural network module implements encoder-decoder architectures.
+This code implements the Interpretable Causal Variational Autoencoder (ICVAE) framework by integrating DAG (Directed Acyclic Graph) constraints into variational autoencoders to discover causal relationships in geochemical data. ICVAE is used as the main training and analysis module to learn causal structures from geological data. The reconstruction module handles data reconstruction using trained models for validation. The utils module provides mathematical operations for VAE computations and DAG constraint enforcement, while the mask_vae module defines the core CausalVAE model integrating encoder, decoder, DAG layer, and conditional prior networks, and the mask module implements the fundamental neural network architectures including the variational encoder for mapping geochemical elements to latent distributions and the DAG-aware decoder for reconstructing element concentrations from structured latent variables.
 
 ## Environment
 This code was developed and tested in the following environment:
 **Python**: 3.9  
-**PyTorch**: 2.0+ (CUDA 11.8+ recommended for GPU acceleration)  
+**PyTorch**: 2.4.1 (CUDA 11.8+ recommended for GPU acceleration)  
 
 
 ## File Structure & Functions
