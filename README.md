@@ -5,7 +5,6 @@ This code implements the Interpretable Causal Variational Autoencoder (ICVAE) fr
 This code was developed and tested in the following environment:
 **Python**: 3.9  
 **PyTorch**: 2.0+ (CUDA 11.8+ recommended for GPU acceleration)  
-**Operating System**: Windows 10/11, Linux, macOS
 
 ## Required Dependencies
 To ensure the code runs properly, please install the following essential libraries:
