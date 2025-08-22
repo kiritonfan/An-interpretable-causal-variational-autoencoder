@@ -4,12 +4,6 @@ Data reconstruction module for trained ICVAE models.
 Loads trained CausalVAE models and performs data reconstruction on geochemical datasets.
 Provides robust error handling, batch processing, and comprehensive result analysis.
 
-Key features:
-- Model loading with device management
-- Robust data preprocessing and normalization
-- Batch-wise reconstruction for large datasets
-- Error analysis and statistical evaluation
-- Multiple fallback mechanisms for reliability
 """
 
 import os
@@ -314,3 +308,4 @@ if __name__ == '__main__':
     
 
     
+
