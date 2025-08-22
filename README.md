@@ -6,6 +6,14 @@ This code was developed and tested in the following environment:
 **Python**: 3.9  
 **PyTorch**: 2.4.1 (CUDA 11.8+ recommended for GPU acceleration)  
 
+## Requirements
+- NumPy
+- Pandas
+- Scikit-learn
+- Matplotlib
+- Seaborn
+- NetworkX
+- tqdm
 
 ## File Structure & Functions
 ```
@@ -20,6 +28,9 @@ research/ICVAE/
 │       └── nns/
 │           └── mask.py         #  Neural networks: Encoder/Decoder architectures
 ```
+
+## Acknowledgements
+This research was supported by the National Key Research and Development Program of China (NO. 22023YFC2906404) , and the Key Research and Development Program of Xinjiang Uygur Autonomous Region, China (2024B03010-3).
         
 ## License
 This project is licensed under the MIT License. See the LICENSE file for more details.
