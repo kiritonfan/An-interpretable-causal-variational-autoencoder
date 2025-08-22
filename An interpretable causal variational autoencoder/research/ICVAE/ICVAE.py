@@ -7,9 +7,6 @@ Main Modules:
 - Model Training: Dynamic weight scheduling, early stopping, checkpointing  
 - Visualization: Causal graphs, training curves, analysis reports
 - Utilities: DataLoader setup, EMA, argument parsing
-
-Usage:
-    python ICVAE.py --data_path your_data.csv --epoch_max 200
 """
 
 import argparse
