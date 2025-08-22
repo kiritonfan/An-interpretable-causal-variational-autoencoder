@@ -3,12 +3,6 @@ Causal Variational Autoencoder (CausalVAE) implementation.
 
 Core model architecture integrating variational autoencoders with directed
 acyclic graph (DAG) constraints for causal structure learning in geochemical data.
-
-Key components:
-- CausalVAE: Main model combining encoder, decoder, and DAG layer
-- DagLayer: Implements structural causal constraints via adjacency matrix
-- Conditional prior network: Label-conditioned latent variable generation
-- Loss functions: ELBO + DAG acyclicity + sparsity constraints
 """
 
 import os
