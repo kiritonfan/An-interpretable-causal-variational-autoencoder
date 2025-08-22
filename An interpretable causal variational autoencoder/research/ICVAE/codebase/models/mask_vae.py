@@ -76,12 +76,6 @@ class CausalVAE(nn.Module):
     
     Architecture:
         Input → Encoder → Latent(z) → DAG Layer → Structured(z') → Decoder → Output
-        
-    Key features:
-    - Conditional prior based on geological labels
-    - DAG-constrained causal structure learning  
-    - Interpretable causal relationship extraction
-    - Multi-loss training with ELBO + DAG penalties
     """
     
     def __init__(self, 
