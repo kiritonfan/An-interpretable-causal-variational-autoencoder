@@ -381,7 +381,7 @@ def train_model(model: CausalVAE, train_loader: data.DataLoader, optimizer: opti
                 })
         
         # ---------------------------------------------------------------------
-        # STEP 4: EPOCH COMPLETION AND STATISTICS
+        # EPOCH COMPLETION AND STATISTICS
         # ---------------------------------------------------------------------
         
         # Validate that at least some batches were processed
@@ -405,7 +405,7 @@ def train_model(model: CausalVAE, train_loader: data.DataLoader, optimizer: opti
                      f"Reconstruction={avg_rec:.4f}, DAG={avg_dag:.4f}")
         
         # ---------------------------------------------------------------------
-        # STEP 5: MODEL VALIDATION AND RECOVERY
+        # MODEL VALIDATION AND RECOVERY
         # ---------------------------------------------------------------------
         
         # Check for NaN in model parameters (indicates training instability)
@@ -424,7 +424,7 @@ def train_model(model: CausalVAE, train_loader: data.DataLoader, optimizer: opti
             continue
         
         # ---------------------------------------------------------------------
-        # STEP 6: MODEL CHECKPOINTING AND EARLY STOPPING
+        # MODEL CHECKPOINTING AND EARLY STOPPING
         # ---------------------------------------------------------------------
         
         # Save best model if significant improvement is achieved
@@ -471,7 +471,7 @@ def train_model(model: CausalVAE, train_loader: data.DataLoader, optimizer: opti
             break
 
         # ---------------------------------------------------------------------
-        # STEP 7: LEARNING RATE SCHEDULING AND VISUALIZATION
+        # LEARNING RATE SCHEDULING AND VISUALIZATION
         # ---------------------------------------------------------------------
         
         # Generate training curves periodically for monitoring
@@ -482,7 +482,7 @@ def train_model(model: CausalVAE, train_loader: data.DataLoader, optimizer: opti
         scheduler.step(avg_loss)
         
         # ---------------------------------------------------------------------
-        # STEP 8: ADAPTIVE TRAINING ADJUSTMENTS
+        # ADAPTIVE TRAINING ADJUSTMENTS
         # ---------------------------------------------------------------------
         
         # Adaptive KL weight adjustment based on reconstruction quality
@@ -830,7 +830,7 @@ def visualize_label_element_heatmap(model, save_dir, element_names, label_names)
 if __name__ == '__main__':
     
     # -------------------------------------------------------------------------
-    # STEP 1: REPRODUCIBILITY AND ENVIRONMENT SETUP
+    # REPRODUCIBILITY AND ENVIRONMENT SETUP
     # -------------------------------------------------------------------------
     
     # Set random seeds for reproducible results
@@ -847,7 +847,7 @@ if __name__ == '__main__':
     os.makedirs(args.checkpoint_dir, exist_ok=True)   # For model checkpoints
     
     # -------------------------------------------------------------------------
-    # STEP 2: DATA LOADING AND PREPROCESSING
+    # DATA LOADING AND PREPROCESSING
     # -------------------------------------------------------------------------
     
     logging.info("="*60)
@@ -862,7 +862,7 @@ if __name__ == '__main__':
     train_loader = create_data_loaders(X_norm, y, args.batch_size, args.num_workers)
     
     # -------------------------------------------------------------------------
-    # STEP 3: MODEL INITIALIZATION
+    # MODEL INITIALIZATION
     # -------------------------------------------------------------------------
     
     # Extract data dimensions
@@ -888,7 +888,7 @@ if __name__ == '__main__':
     )
     
     # -------------------------------------------------------------------------
-    # STEP 4: TRAINING CONFIGURATION SUMMARY
+    # TRAINING CONFIGURATION SUMMARY
     # -------------------------------------------------------------------------
     
     logging.info("\n" + "="*50)
@@ -910,7 +910,7 @@ if __name__ == '__main__':
     logging.info("="*50 + "\n")
     
     # -------------------------------------------------------------------------
-    # STEP 5: MODEL TRAINING
+    # MODEL TRAINING
     # -------------------------------------------------------------------------
     
     # Execute main training loop
