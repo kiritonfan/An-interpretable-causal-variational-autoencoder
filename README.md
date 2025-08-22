@@ -28,10 +28,7 @@ research/ICVAE/
 │       └── nns/
 │           └── mask.py         #  Neural networks: Encoder/Decoder architectures
 ```
-
-## Acknowledgements
-This research was supported by the National Key Research and Development Program of China (NO. 22023YFC2906404) , and the Key Research and Development Program of Xinjiang Uygur Autonomous Region, China (2024B03010-3).
-        
+     
 ## License
 This project is licensed under the MIT License. See the LICENSE file for more details.
 
